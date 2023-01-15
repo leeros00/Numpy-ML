@@ -121,5 +121,89 @@ class Conv1d:
         self.grad_bias = np.sum(delta, axis=(0, 2))
         return dx
 
+class Tanh:
+    def forward(self, x):
+        return np.tanh(x)
+
+    def backward(self, state):
+        return 1 - state**2
+
+class RNNCell:
+    def __init__(self, input_size: int, hidden_size: int) -> None:
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        self.activation = Tanh()
+        bound = np.sqrt(1/hidden_size)
+        self.weight_ih = np.random.uniform(low=-bound, high=bound, size=(hidden_size, input_size))
+        self.weight_hh = np.random.uniform(low=-bound, high=bound, size=(hidden_size, hidden_size))
+        self.bias_ih = np.random.uniform(low=-bound, high=bound, size=hidden_size,)
+        self.bias_hh = np.random.uniform(low=-bound, high=bound, size=hidden_size,)
+
+        self.grad_weight_ih = np.zeros((hidden_size, input_size))
+        self.grad_weight_hh = np.zeros((hidden_size, hidden_size))
         
+        self.grad_bias_ih = np.zeros(hidden_size)
+        self.grad_bias_hh = np.zeros(hidden_size)
+
+    def forward(self, x_t: np.array, h_prev: np.array) -> np.array:
+        y_t = x_t@self.weight_ih.T + self.bias_ih + h_prev@self.weight_hh.T + self.bias_hh
+        h_t = self.activation.forward(y_t)
+        return h_t
+
+    def backward(self, grad: np.array, h_t: np.array, h_prev_l: np.array, h_prev_t: np.array) -> Tuple[np.array]:
+        dy_t = self.activation.backward(state=h_t)*grad
+
+        self.grad_weight_ih += dy_t.T @ h_prev_l
+        self.grad_weight_hh += dy_t.T @ h_prev_t
+        self.grad_bias_ih += np.sum(dy_t, axis=0)
+        self.grad_bias_hh += np.sum(dy_t, axis=0)
+
+        dx = dy_t @ self.weight_ih
+        dh = dy_t @ self.weight_hh
+
+        return (dx, dh)
+
+class RNN:
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int=2) -> None:
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        # TO DO: Check
+        self.layers = [RNNCell(input_size=input_size, hidden_size=hidden_size)]
+        for layer in range(num_layers-1):
+            # TO DO: Check
+            self.layers.append(RNNCell(input_size=hidden_size, hidden_size=hidden_size))
+    
+    def forward(self, x: np.array, h_0: np.array=None) -> np.array:
+        batch_size, seq_len, _ = x.shape
+        hiddens = np.zeros((seq_len+1, self.num_layers, batch_size, self.hidden_size))
+        if h_0 is not None:
+            hiddens[0, :, :, :] = h_0
+        
+        for t in range(seq_len):
+            x_t = x[:, t, :]
+            for layer in range(self.num_layers):
+                x_t = self.layers[layer].forward(x_t, hiddens[t, layer, :, :])
+                hiddens[t+1, layer, :, :] = x_t
+
+        self.x = x
+        self.hiddens = hiddens
+        return hiddens[1:, -1, :, :].transpose(1, 0, 2), hiddens[-1, :, :, :]
+
+    def backward(self, grad: np.array) -> Tuple[np.array]:
+        batch_size, seq_len, input_size = self.x.shape
+
+        dx = np.zeros((batch_size, seq_len, input_size))
+        dh_0 = np.zeros((self.num_layers, batch_size, self.hidde_size))
+        dh_0[-1, :, :] = grad
+
+        for t in reversed(range(1, seq_len+1)):
+            for l in reversed(range(1, self.num_layers)):
+                dx_t_l, dh_0[l] = self.layers[l].backward(dh_0[l], self.hiddens[t][l], self.hiddens[t][l-1], self.hiddens[t-1][l])
+                dh_0[l-1] += dx_t_l
+            dx_t, dh_0[0] = self.layers[0].backward(dh_0[0], self.hiddens[t][0], self.x[:, t-1, :], self.hiddens[t-1][0])
+            dx[:, t-1, :] = dx_t
+        return (dx, dh_0)
+
         
